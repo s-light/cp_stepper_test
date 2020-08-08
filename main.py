@@ -17,99 +17,106 @@ import time
 import supervisor
 import board
 import pulseio
+import rotaryio
 # from digitalio import DigitalInOut, Direction, Pull
-from digitalio import DigitalInOut, Direction
+# from digitalio import DigitalInOut, Direction
+import digitalio
 
+import terminalio
+import displayio
+from adafruit_display_text import label
+from adafruit_ssd1331 import SSD1331
+
+from stepper import MyStepper
 
 # led = DigitalInOut(board.D13)
-# led.direction = Direction.OUTPUT
+# led.direction = digitalio.Direction.OUTPUT
 
-stepper_dir = DigitalInOut(board.D12)
-stepper_dir.direction = Direction.OUTPUT
-# stepper_step = DigitalInOut(board.D9)
-# stepper_step.direction = Direction.OUTPUT
-stepper_step = pulseio.PWMOut(
-    board.D9, duty_cycle=0, frequency=5, variable_frequency=True)
-
-led = pulseio.PWMOut(
-    board.D13, duty_cycle=0, frequency=50, variable_frequency=True)
+mystepper = MyStepper(
+    pin_direction=board.D12,
+    pin_step=board.D9,
+    pin_led=board.D13,
+    steps_per_revolution=200,
+    microsteps=16
+)
 
 
-def stepper_run(freq=200):
-    """Run Stepper Motor with given frequency."""
-    stepper_step.frequency = freq
-    stepper_step.duty_cycle = 65535 // 2
-    led_freq = freq // 10
-    if freq < 10:
-        led_freq = freq
-    led.frequency = led_freq
-    led.duty_cycle = 65535 // 2
-    # stepper_step.duty_cycle = 32767
-    print("stepper run @{}Hz".format(stepper_step.frequency))
+button_back = digitalio.DigitalInOut(board.A0)
+button_back.pull = digitalio.Pull.UP
+button_ok = digitalio.DigitalInOut(board.A1)
+button_ok.pull = digitalio.Pull.DOWN
+rot_encoder = rotaryio.IncrementalEncoder(board.A2, board.A3)
+rot_encoder_lastvalue = 0
+
+button_run = digitalio.DigitalInOut(board.D11)
+button_run.pull = digitalio.Pull.UP
 
 
-def stepper_fade_to(freq_target=2000, freq_start=1000):
-    """
-    Run Stepper Motor with given frequency.
+# display
+displayio.release_displays()
+spi = board.SPI()
+tft_cs = board.D2
+tft_dc = board.A4
+tft_res = board.A5
 
-    QSH2818-32-07-006
-    Maximum microstep velocity = Fullstep threshold = RPS 5.817
-    Maximum fullstep velocity = RPS 12.875
-    (1  RPS  =  1  revolution  per  second)
+display_bus = displayio.FourWire(
+    spi, command=tft_dc, chip_select=tft_cs, reset=tft_res
+)
 
-    RPM = freq/(200*16/60)
-    RPS = freq/(steps_revolution*microsteps)
-    RPS = freq/(200*16)
-    250000/(200*16/60) = 4687,5 RPM = 78,125 RPS
+display = SSD1331(display_bus, width=96, height=64)
+display.rotation = 180
 
-    """
-    if freq_target > 250000:
-        freq_target = 250000
-    stop_at_end = False
-    if freq_target == 0:
-        stop_at_end = True
-        freq_target = 2
-    step = 1
-    if freq_target < freq_start:
-        step *= -1
-    # stepper_step.duty_cycle = 32767
-    stepper_step.frequency = freq_start
-    stepper_step.duty_cycle = 65535 // 2
-    led.duty_cycle = 65535 // 2
-    led_freq = freq_target // 10
-    if freq_target < 10:
-        led_freq = freq_target
-        if freq_target == 0:
-            led_freq = 2
-    led.frequency = led_freq
-    print("stepper start fade to {}Hz {}RPS".format(
-        freq_target, freq_target/(200*16)))
-    # delay_time = 0
-    # if abs(freq_start - freq_target) > 100000:
-    #     delay_time = 0.001
-    # for freq in range(freq_start, freq_target, 10):
-    for freq in range(freq_start, freq_target, step):
-        stepper_step.frequency = freq
-        # print(".", end="")
-        # led.frequency = freq // 1000
-        if (freq % 100) == 0:
-            print(".", end="")
-            # print(". {}Hz".format(stepper_step.frequency))
-        # time.sleep(delay_time)
-    print("")
-    if stop_at_end:
-        stepper_stop()
-    else:
-        print("stepper running at {}Hz {}RPS".format(
-            stepper_step.frequency, stepper_step.frequency/(200*16)))
+# splash = displayio.Group(max_size=10)
+# display.show(splash)
+
+# globals
+button_back_state = False
+
+##########################################
 
 
-def stepper_stop():
-    """Stop Stepper Motor."""
-    stepper_step.duty_cycle = 0
-    stepper_step.frequency = 10
-    led.duty_cycle = 0
-    print("stepper stopped.")
+# stepper
+
+
+# buttons
+
+def handle_buttons():
+    """Check Button Inputs."""
+    global rot_encoder_lastvalue
+    global button_back_state
+
+    # if button_back.value is not button_back_state:
+    #     button_back_state = button_back.value
+    if not button_back.value:
+        print("reset encoder position")
+        rot_encoder.position = 0
+
+    if button_ok.value:
+        # print("button ok")
+        if mystepper.speed_rps_current is not mystepper.speed_rps_target:
+            mystepper.fade_to_rps(mystepper.speed_rps_target)
+
+    # if button_run.value is not mystepper.run:
+    if not button_run.value:
+        print("toggle mystepper")
+        mystepper.toggle()
+
+    if rot_encoder.position is not rot_encoder_lastvalue:
+        diff = rot_encoder.position - rot_encoder_lastvalue
+        if rot_encoder.position > 100:
+            # simple *step size multiply*
+            new_pos = rot_encoder.position + (diff*10)
+            # foce 10-steps
+            new_pos = (new_pos // 10) * 10
+            rot_encoder.position = new_pos
+        rot_encoder_lastvalue = rot_encoder.position
+        mystepper.speed_rpm_target = rot_encoder.position
+        mystepper.speed_rps_target = mystepper.speed_rpm_target / 60
+        print("mystepper.speed_rps_target: {}".format(
+            mystepper.speed_rps_target))
+
+    # if time.monotonic() % 1 == 0:
+    #     print("rot_encoder: {}".format(rot_encoder.position))
 
 
 # debug menu
@@ -134,25 +141,48 @@ def check_input():
         if input_string:
             if "f" in input_string:
                 freq_new = parse_value(input_string[1:], int)
-                stepper_fade_to(
-                    freq_target=freq_new, freq_start=stepper_step.frequency)
+                mystepper.fade_to(freq_target=freq_new)
             else:
                 freq_new = parse_value(input_string, int)
                 if freq_new == 0:
-                    stepper_stop()
+                    mystepper.stop()
                 else:
-                    stepper_run(freq_new)
+                    mystepper.run(freq_new)
         else:
-            stepper_stop()
+            mystepper.stop()
         print(">> ", end="")
+
+
+# display
+def update_display():
+    """Update Display."""
+    text = (
+        "{:+.2f} RPS\n"
+        "{:+.2f} RPM"
+        "".format(
+            mystepper.speed_rps_target,
+            mystepper.speed_rps_target*60
+        )
+    )
+    text_area = label.Label(
+        terminalio.FONT, text=text, color=0xFFFFFF, x=12, y=32)
+    # splash.append(text_area)
+    display.show(text_area)
 
 
 ##########################################
 #
 #
 
-print("start stepper with 100Hz")
-stepper_run(300)
+def main(debugmenu=False):
+    """Main."""
+    if debugmenu:
+        check_input()
+    handle_buttons()
+    update_display()
+
+# print("start stepper with 100Hz")
+# stepper_run(300)
 
 
 print(42 * '*')
@@ -160,7 +190,7 @@ print("loop..")
 if supervisor.runtime.serial_connected:
     print("type frequency:")
 while True:
-    check_input()
+    main(debugmenu=supervisor.runtime.serial_connected)
 
 
 # while True:

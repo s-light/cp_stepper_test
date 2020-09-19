@@ -32,6 +32,7 @@ class MyStepper():
     STATE_STANDBY = 0
     STATE_FADING = 1
     STATE_RUNNING = 2
+    MAX_FREQUENCY = 250000
 
     def __init__(
             self,
@@ -110,8 +111,8 @@ class MyStepper():
         if not freq_start:
             freq_start = int(self.stepper_step.frequency)
 
-        if freq_target > 250000:
-            freq_target = 250000
+        if freq_target > self.MAX_FREQUENCY:
+            freq_target = self.MAX_FREQUENCY
         stop_at_end = False
         if freq_target == 0:
             stop_at_end = True
